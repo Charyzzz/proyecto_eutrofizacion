@@ -1,16 +1,16 @@
-# Datos crudos (descargables por separado)
+# Datos crudos
 data/raw/external/
 
-# Datos procesados (generados por scripts)
+# Datos procesados
 data/processed/
 data/interim/
 data/splits/
 
-# Outputs grandes
+# Outputs
 outputs/
 *.csv
 
-# Caché de Python
+# Python
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
@@ -20,7 +20,6 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
-*.swp
 
 # OS
 .DS_Store
