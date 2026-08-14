@@ -1,0 +1,12 @@
+opencv-python
+numpy
+pandas
+scikit-image
+scikit-learn
+rasterio
+exifread
+geopy
+imagehash
+xgboost
+matplotlib
+jupyter

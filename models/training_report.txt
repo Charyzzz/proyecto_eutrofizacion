@@ -1,0 +1,28 @@
+============================================================
+REPORTE DE ENTRENAMIENTO - SEGMENTADOR DE AGUA
+============================================================
+
+MÉTRICAS
+------------------------------------------------------------
+F1-Score (Train): 0.8716
+F1-Score (Test): 0.8603
+
+MATRIZ DE CONFUSIÓN (Test)
+------------------------------------------------------------
+TN (agua detectada correctamente): 179414
+FP (falsos positivos): 20126
+FN (falsos negativos): 33737
+TP (agua no-agua detectada correctamente): 165803
+
+IMPORTANCIA DE FEATURES
+------------------------------------------------------------
+H (Hue)        : 0.1166 (11.7%)
+S (Sat)        : 0.0567 (5.7%)
+V (Brillo)     : 0.0827 (8.3%)
+a* (Lab)       : 0.1735 (17.4%)
+b* (Lab)       : 0.0470 (4.7%)
+Textura        : 0.5236 (52.4%)
+
+============================================================
+Modelo listo para usar: segmentar_agua_supervisado()
+============================================================
