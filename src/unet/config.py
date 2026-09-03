@@ -117,7 +117,7 @@ class UNetConfig:
     # ENTRENAMIENTO
     # ------------------------------------------------------------------
     batch_size: int = 8
-    num_epochs: int = 50
+    num_epochs: int = 25
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
 
@@ -160,7 +160,7 @@ class UNetConfig:
     # ------------------------------------------------------------------
     # EARLY STOPPING Y CHECKPOINTING
     # ------------------------------------------------------------------
-    early_stopping_patience: int = 12
+    early_stopping_patience: int = 6
     monitor_metric: str = "dice"  # métrica para seleccionar mejor modelo
 
     # ------------------------------------------------------------------
