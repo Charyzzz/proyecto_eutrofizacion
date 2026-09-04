@@ -9,9 +9,17 @@ Funciones de visualización para:
   - Análisis de errores (FP, FN, bordes)
 """
 
+import sys
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+
+# Solo forzamos el backend "Agg" (sin pantalla) fuera de Jupyter. Así
+# train_unet.py puede seguir guardando figuras aunque no haya display, pero
+# un notebook (que corre dentro de ipykernel) conserva su backend
+# interactivo/inline normal y plt.show() funciona como se espera.
+if "ipykernel" not in sys.modules:
+    matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from pathlib import Path
