@@ -16,13 +16,15 @@ Ver imágenes de otro split:
 Ver imágenes específicas por nombre (ej. casos buenos/malos que viste en el log):
     python notebooks/visualize_predictions.py --imagenes DJI_1935.JPG DJI_5725.JPG DJI_12059.JPG
 
-Guardar las figuras en vez de solo mostrarlas:
-    python notebooks/visualize_predictions.py --n 8 --guardar
+Las figuras siempre se guardan en outputs/unet/visualizations/predicciones_manual/
+y se abren automáticamente con el visor de imágenes de Windows. Usa --no-abrir
+si corres esto por SSH / sin pantalla y solo quieres los PNG en disco.
 
 Usar un checkpoint distinto al best_model.pth:
     python notebooks/visualize_predictions.py --n 8 --checkpoint outputs/unet/checkpoints/checkpoint_epoch_010.pth
 """
 
+import os
 import sys
 import argparse
 from pathlib import Path
@@ -45,9 +47,16 @@ from unet.inference import load_model
 from unet.visualization import plot_prediction
 
 
-def predecir_y_visualizar_imagen(row, base_path, model, device, config, transform, save_dir=None):
+def predecir_y_visualizar_imagen(row, base_path, model, device, config, transform, save_dir, abrir=True):
     """Corre el pipeline completo (downscale + patches + reconstrucción) sobre
-    UNA imagen y la muestra junto a su ground truth y el mapa de errores."""
+    UNA imagen, guarda la figura (image + GT + prob + pred + errores) en disco
+    y la abre con el visor de imágenes del sistema.
+
+    plot_prediction() usa el backend 'Agg' de matplotlib (forzado en
+    unet/visualization.py para poder guardar figuras sin pantalla durante el
+    entrenamiento), así que plt.show() nunca abre una ventana — por eso
+    siempre guardamos a PNG y lo abrimos nosotros mismos.
+    """
     img_path = base_path / row["filepath"]
     mask_path = base_path / row["segmentation_mask_path"]
     nombre = Path(row["filepath"]).name
@@ -76,7 +85,7 @@ def predecir_y_visualizar_imagen(row, base_path, model, device, config, transfor
     true_mask_float = (mask_ds > 127).astype(np.float32)
     metrics = compute_metrics(prob_avg, true_mask_float, threshold=config.threshold)
 
-    save_path = (Path(save_dir) / f"pred_{Path(nombre).stem}.png") if save_dir else None
+    save_path = Path(save_dir) / f"pred_{Path(nombre).stem}.png"
 
     plot_prediction(
         image_ds=image_ds,
@@ -88,7 +97,14 @@ def predecir_y_visualizar_imagen(row, base_path, model, device, config, transfor
         save_path=save_path,
     )
 
-    print(f"{nombre}: {metrics}")
+    print(f"{nombre}: {metrics}  ->  {save_path}")
+
+    if abrir and sys.platform == "win32":
+        try:
+            os.startfile(save_path)
+        except OSError as e:
+            print(f"  (no se pudo abrir automáticamente: {e})")
+
     return metrics
 
 
@@ -111,8 +127,8 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=None,
                          help="Ruta al checkpoint (default: outputs/unet/checkpoints/best_model.pth)")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--guardar", action="store_true",
-                         help="Guarda las figuras en outputs/unet/visualizations/predicciones_manual/")
+    parser.add_argument("--no-abrir", action="store_true",
+                         help="No abrir las figuras automáticamente (solo guardarlas). Útil por SSH/sin pantalla.")
     args = parser.parse_args()
 
     config = UNetConfig(base_path=BASE_PATH)
@@ -134,11 +150,9 @@ def main():
         device=device,
     )
 
-    save_dir = None
-    if args.guardar:
-        save_dir = config.get_path(config.viz_dir) / "predicciones_manual"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Guardando figuras en: {save_dir}")
+    save_dir = config.get_path(config.viz_dir) / "predicciones_manual"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Guardando figuras en: {save_dir}")
 
     df_train, df_val, df_test = load_or_create_splits(
         csv_path=config.get_path(config.csv_path),
@@ -169,7 +183,9 @@ def main():
 
     todas_las_metricas = []
     for fila in filas_a_visualizar:
-        m = predecir_y_visualizar_imagen(fila, BASE_PATH, model, device, config, transform, save_dir)
+        m = predecir_y_visualizar_imagen(
+            fila, BASE_PATH, model, device, config, transform, save_dir, abrir=not args.no_abrir
+        )
         todas_las_metricas.append(m)
 
     if todas_las_metricas:
