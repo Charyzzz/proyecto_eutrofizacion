@@ -113,6 +113,12 @@ def main():
     with open(MODEL_PATH, "rb") as f:
         modelo = pickle.load(f)
 
+    # El modelo fue entrenado con verbose=1 (queda guardado en el pickle),
+    # lo que hace que joblib imprima el progreso de sus 100 árboles en
+    # paralelo en CADA llamada a predict() (una vez por imagen). Lo apagamos
+    # para que solo se vea nuestro propio progreso cada 50 imágenes.
+    modelo.verbose = 0
+
     df_test = pd.read_csv(TEST_SPLIT_PATH)
     print(f"Evaluando sobre {len(df_test)} imágenes (mismo test set que la U-Net)\n")
 
