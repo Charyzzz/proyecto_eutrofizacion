@@ -1,0 +1,29 @@
+# Pipeline U-Net - Segmentación de agua
+# Instalar con: pip install -r requirements_unet.txt
+
+# Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# U-Net con encoder preentrenado
+segmentation-models-pytorch>=0.3.3
+
+# Augmentation
+albumentations>=1.3.0
+
+# Procesamiento de imagen
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=9.5.0
+
+# Datos
+pandas>=2.0.0
+scikit-learn>=1.3.0
+tqdm>=4.65.0
+
+# Visualización
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Ya instalado en el proyecto (no reinstalar si existe)
+# scikit-image>=0.21.0

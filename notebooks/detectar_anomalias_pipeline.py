@@ -67,7 +67,7 @@ from skimage.segmentation import slic
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-BASE_PATH = Path(r"D:\proyecto_eutrofizacion")
+BASE_PATH = Path(r"C:\Users\u_fabcore\Downloads\proyecto_eutrofizacion")
 sys.path.insert(0, str(BASE_PATH / "src"))
 
 from unet.config import UNetConfig
@@ -82,10 +82,10 @@ from water_masc2 import conectar_graffiti_y_cerrar, suavizar_bordes_contorno
 # -----------------------------------------------------------------------
 # PARÁMETROS A ELEGIR
 # -----------------------------------------------------------------------
-ANIOS_ENTRENAMIENTO = [2019, 2020, 2021]   # línea base ("normal" del río)
-ANIOS_PRUEBA = [2022, 2023, 2024]          # se evalúan contra esa línea base
+ANIOS_ENTRENAMIENTO = [2019, 2020]   # línea base ("normal" del río)
+ANIOS_PRUEBA = [2022]          # se evalúan contra esa línea base
 
-SALTO = 1          # 1 = todas las imágenes de cada año; sube para ir más rápido
+SALTO = 10          # 1 = todas las imágenes de cada año; sube para ir más rápido
 N_IMAGENES = None  # límite opcional por conjunto (None = sin límite)
 
 N_SEGMENTS = 20    # mismo valor que usaba construir_tabla_superpixeles()
@@ -93,7 +93,7 @@ SEED = 42
 
 # Mismos límites de a*/L que en 01_water_segmentation.ipynb / 03_pipeline_combinado
 A_MIN, A_MAX = -120, 1
-L_MIN, L_MAX = 50, 255
+L_MIN, L_MAX = 50, 210
 
 CONTAMINATION = "auto"
 N_ESTIMATORS = 100
@@ -198,7 +198,7 @@ def predecir_mascara_final(imagen_bgr, imagen_rgb, model, device, transform, con
 
 def extraer_caracteristicas_superpixeles(imagen, mascara_agua, n_segments=20):
     """Copia exacta de la función de 02_superpixels_training.ipynb."""
-    downscale = 4
+    downscale = 2
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     mascara_agua = cv2.erode(mascara_agua, kernel, iterations=1)
@@ -288,7 +288,7 @@ def procesar_imagen(fila, model, device, transform, config):
 # Selección de imágenes por AÑOS (lista, no un solo año) + caché a CSV
 # -----------------------------------------------------------------------
 
-def seleccionar_imagenes_por_anios(df, anios, salto=1, n_imagenes=None):
+def seleccionar_imagenes_por_anios(df, anios, salto=3, n_imagenes=None):
     anios_str = [str(a) for a in anios]
     df_anios = df[df["group"].astype(str).isin(anios_str)].copy().reset_index(drop=True)
 
