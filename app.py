@@ -1,5 +1,10 @@
 import streamlit as st
 import textwrap
+import tempfile
+import shutil
+from pathlib import Path
+
+import app_pipeline as pipe
 
 
 # ============================================================
@@ -18,8 +23,24 @@ st.set_page_config(
 # INICIALIZAR SESSION STATE
 # ============================================================
 
-if 'uploaded_names' not in st.session_state:
-    st.session_state.uploaded_names = set()
+if 'resultados_imagenes' not in st.session_state:
+    st.session_state.resultados_imagenes = None
+
+if 'df_superpixeles' not in st.session_state:
+    st.session_state.df_superpixeles = None
+
+if 'modo_resultado' not in st.session_state:
+    st.session_state.modo_resultado = None
+
+
+# ============================================================
+# CARGA DE MODELOS (cacheado -- solo se carga una vez por sesión
+# de servidor, no en cada rerun/click)
+# ============================================================
+
+@st.cache_resource(show_spinner="Cargando la U-Net...")
+def cargar_unet_cacheado():
+    return pipe.cargar_unet()
 
 
 # ============================================================
@@ -44,35 +65,6 @@ def format_size(size_bytes):
 
     else:
         return f"{size_bytes / (1024 ** 3):.2f} GB"
-
-
-# ============================================================
-# FUNCIÓN PARA VERIFICAR DUPLICADOS
-# ============================================================
-
-def check_duplicate_names(uploaded_files):
-    """Verifica si hay archivos con nombres duplicados"""
-    
-    if not uploaded_files:
-        return []
-    
-    current_names = {file.name for file in uploaded_files}
-    duplicates = current_names & st.session_state.uploaded_names
-    
-    return list(duplicates)
-
-
-# ============================================================
-# FUNCIÓN PARA ACTUALIZAR NOMBRES GUARDADOS
-# ============================================================
-
-def update_uploaded_names(uploaded_files):
-    """Actualiza la lista de nombres guardados"""
-    
-    if uploaded_files:
-        st.session_state.uploaded_names.update(
-            file.name for file in uploaded_files
-        )
 
 
 # ============================================================
@@ -335,20 +327,6 @@ st.markdown(
             text-align: center;
         }
 
-        /* =====================================================
-           ALERTA DE DUPLICADOS
-           ===================================================== */
-
-        .duplicate-warning {
-            background-color: #fef3cd;
-            border: 1px solid #ffc107;
-            border-radius: 12px;
-            padding: 16px 20px;
-            color: #856404;
-            margin-top: 15px;
-            font-size: 14px;
-        }
-
         </style>
         """
     ),
@@ -474,21 +452,6 @@ with st.container(border=True):
 if uploaded_files:
 
     number_images = len(uploaded_files)
-
-    # ========================================================
-    # VERIFICAR DUPLICADOS
-    # ========================================================
-
-    duplicates = check_duplicate_names(uploaded_files)
-
-    if duplicates:
-        st.error(
-            f"❌ **Error:** Los siguientes archivos ya fueron cargados anteriormente y no pueden volver a subirse:\n\n"
-            f"{', '.join([f'`{dup}`' for dup in sorted(duplicates)])}\n\n"
-            f"Por favor, elimina estos archivos de tu selección e intenta de nuevo."
-        )
-        st.stop()
-
 
     # ========================================================
     # COMPROBAR CANTIDAD DE IMÁGENES
@@ -681,7 +644,56 @@ if uploaded_files:
 
 
     # ========================================================
-    # BOTÓN CONTINUAR
+    # OPCIÓN DE SALTO ENTRE IMÁGENES
+    # ========================================================
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    with st.container(border=True):
+
+        st.markdown(
+            '<div class="section-title">🔀 3. Opciones de muestreo</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            textwrap.dedent(
+                """
+                <div class="section-description">
+                    Si tus imágenes se solapan o fueron tomadas casi en el
+                    mismo lugar, salta algunas para no analizar tomas
+                    redundantes.
+                </div>
+                """
+            ),
+            unsafe_allow_html=True
+        )
+
+        salto = st.selectbox(
+            "Saltar N imágenes entre cada una analizada",
+            options=[0, 1, 2, 3, 5, 10],
+            index=0,
+            key="salto_imagenes"
+        )
+
+    stride = salto + 1
+    archivos_a_procesar = uploaded_files[::stride]
+    n_a_procesar = len(archivos_a_procesar)
+
+    st.markdown(
+        textwrap.dedent(
+            f"""
+            <div class="info-box">
+                Se analizarán <b>{n_a_procesar}</b> de {number_images:,} imágenes cargadas
+                (saltando {salto} entre cada una).
+            </div>
+            """
+        ),
+        unsafe_allow_html=True
+    )
+
+
+    # ========================================================
+    # BOTONES: ANÁLISIS o ENTRENAMIENTO
     # ========================================================
 
     st.markdown(
@@ -690,41 +702,235 @@ if uploaded_files:
     )
 
 
-    button_left, button_center, button_right = st.columns(
-        [1, 1, 1]
-    )
+    button_col1, button_col2 = st.columns(2)
 
+    with button_col1:
+        hacer_analisis = st.button(
+            "🔎  Hacer el análisis",
+            use_container_width=True,
+            help="Detecta anomalías con el Isolation Forest ya entrenado (no vuelve a entrenar nada)."
+        )
 
-    with button_center:
-
-        continue_analysis = st.button(
-            "🔎  Continuar al Análisis  →",
-            use_container_width=True
+    with button_col2:
+        entrenar_modelo = st.button(
+            "🧠  Entrenar Isolation Forest",
+            use_container_width=True,
+            help="Ajusta (fit) un Isolation Forest nuevo usando estas imágenes como línea base, y reemplaza el modelo guardado."
         )
 
 
     # ========================================================
-    # PLACEHOLDER DEL PIPELINE
+    # EJECUTAR EL PIPELINE (máscara -> superpíxeles -> Isolation Forest)
     # ========================================================
 
-    if continue_analysis:
-        
-        # Actualizar nombres guardados
-        update_uploaded_names(uploaded_files)
+    if hacer_analisis or entrenar_modelo:
+
+        modelo_guardado = None
+        if hacer_analisis:
+            modelo_guardado = pipe.cargar_isolation_forest()
+            if modelo_guardado is None:
+                st.error(
+                    "Todavía no hay un Isolation Forest entrenado "
+                    "(no se encontró models/isolation_forest_agua.pkl). "
+                    "Usa primero **🧠 Entrenar Isolation Forest** con un "
+                    "conjunto de imágenes de referencia."
+                )
+                st.stop()
+
+        try:
+            model, device, transform, config = cargar_unet_cacheado()
+        except FileNotFoundError as e:
+            st.error(f"No se pudo cargar la U-Net: {e}")
+            st.stop()
+
+        resultados_imgs = {}
+        tmp_dir = Path(tempfile.mkdtemp(prefix="water_app_"))
+        progreso = st.progress(0.0, text="Procesando imágenes...")
+
+        try:
+            for i, archivo in enumerate(archivos_a_procesar):
+                ruta_tmp = tmp_dir / archivo.name
+                with open(ruta_tmp, "wb") as f:
+                    f.write(archivo.getbuffer())
+
+                resultado = pipe.procesar_imagen(ruta_tmp, model, device, transform, config)
+                if resultado is not None:
+                    resultados_imgs[archivo.name] = resultado
+
+                progreso.progress(
+                    (i + 1) / n_a_procesar,
+                    text=f"Procesando imágenes... ({i + 1}/{n_a_procesar})"
+                )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        progreso.empty()
+
+        df_superpixeles = pipe.combinar_filas(resultados_imgs)
+
+        if df_superpixeles.empty:
+            st.warning(
+                "No se detectó agua suficiente en ninguna imagen -- no hay "
+                "superpíxeles para analizar. Revisa que las imágenes "
+                "correspondan al mismo cuerpo de agua con el que se entrenó "
+                "la U-Net."
+            )
+            st.stop()
+
+        if entrenar_modelo:
+            scaler, modelo, df_superpixeles = pipe.entrenar_isolation_forest(df_superpixeles)
+            pipe.guardar_isolation_forest(
+                scaler, modelo,
+                metadata={"n_imagenes_entrenamiento": len(resultados_imgs)}
+            )
+            st.session_state.modo_resultado = "entrenamiento"
+        else:
+            df_superpixeles = pipe.predecir_anomalias(
+                df_superpixeles,
+                modelo_guardado["scaler"],
+                modelo_guardado["modelo"],
+                modelo_guardado["features"],
+            )
+            st.session_state.modo_resultado = "analisis"
+
+        st.session_state.resultados_imagenes = resultados_imgs
+        st.session_state.df_superpixeles = df_superpixeles
+
+
+    # ========================================================
+    # RESULTADOS (persisten entre reruns -- ej. al usar los selectbox
+    # de abajo -- porque viven en session_state, no se recalculan)
+    # ========================================================
+
+    if st.session_state.df_superpixeles is not None:
+
+        df_sp = st.session_state.df_superpixeles
+        resultados_imgs = st.session_state.resultados_imagenes
+        modo = st.session_state.modo_resultado
+
+        n_imagenes_proc = len(resultados_imgs)
+        n_con_agua = sum(1 for r in resultados_imgs.values() if not r["sin_agua_suficiente"])
+        n_superpixeles = len(df_sp)
+        n_anomalos = int((df_sp["anomalia"] == -1).sum())
+        pct_anomalos = f"{n_anomalos / n_superpixeles * 100:.1f}%" if n_superpixeles else "0%"
+        imagenes_con_anomalia = sorted(df_sp.loc[df_sp["anomalia"] == -1, "foto_origen"].unique())
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        analysis_html = f"""
-        <div class="analysis-message">
-            <b>✓ {number_images:,} imágenes listas para analizar.</b>
-            <br><br>
-            Tamaño total: <b>{total_size_text}</b>
-            <br><br>
-            El pipeline de segmentación y detección de anomalías se conectará aquí posteriormente.
-        </div>
-        """
-        
-        st.markdown(analysis_html, unsafe_allow_html=True)
+        # ---- Resumen general ----
+        with st.container(border=True):
+
+            titulo = "✓ Entrenamiento completado" if modo == "entrenamiento" else "📊 Resultados del análisis"
+            st.markdown(
+                f'<div class="section-title">{titulo}</div>',
+                unsafe_allow_html=True
+            )
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Imágenes procesadas", f"{n_imagenes_proc:,}")
+            m2.metric("Con agua detectada", f"{n_con_agua:,}")
+            m3.metric("Superpíxeles analizados", f"{n_superpixeles:,}")
+            m4.metric("Superpíxeles anómalos", f"{n_anomalos:,}", pct_anomalos)
+
+            if modo == "entrenamiento":
+                st.markdown(
+                    textwrap.dedent(
+                        """
+                        <div class="analysis-message">
+                            ✓ Isolation Forest reentrenado y guardado en
+                            <code>models/isolation_forest_agua.pkl</code>.
+                            La próxima vez que uses "Hacer el análisis" se
+                            usará este modelo actualizado.
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True
+                )
+
+        # ---- Superpíxeles: verde = conservado, rojo = descartado ----
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        with st.container(border=True):
+
+            st.markdown(
+                '<div class="section-title">🟩 Superpíxeles por imagen</div>',
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                textwrap.dedent(
+                    """
+                    <div class="section-description">
+                        Verde = superpíxel usado en el análisis (área suficiente).
+                        Rojo = descartado por área insuficiente.
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True
+            )
+
+            nombres_con_agua = [n for n, r in resultados_imgs.items() if not r["sin_agua_suficiente"]]
+
+            if nombres_con_agua:
+                imagen_sel = st.selectbox(
+                    "Elige una imagen",
+                    nombres_con_agua,
+                    key="sel_superpixeles"
+                )
+                r = resultados_imgs[imagen_sel]
+                n_ok = len(r["filas_ok"])
+                n_desc = len(r["filas_descartadas"])
+
+                st.image(
+                    r["overlay_superpixeles"],
+                    caption=f"Verde: {n_ok} conservados  |  Rojo: {n_desc} descartados",
+                    use_container_width=True
+                )
+            else:
+                st.markdown(
+                    '<div class="info-box">Ninguna imagen tuvo agua suficiente para generar superpíxeles.</div>',
+                    unsafe_allow_html=True
+                )
+
+        # ---- Anomalías: círculo rojo sobre la imagen ----
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        with st.container(border=True):
+
+            st.markdown(
+                '<div class="section-title">🔴 Anomalías detectadas</div>',
+                unsafe_allow_html=True
+            )
+
+            if imagenes_con_anomalia:
+                st.markdown(
+                    textwrap.dedent(
+                        f"""
+                        <div class="section-description">
+                            {len(imagenes_con_anomalia)} de {n_con_agua} imágenes
+                            con al menos una anomalía detectada.
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True
+                )
+
+                imagen_anom_sel = st.selectbox(
+                    "Elige una imagen",
+                    imagenes_con_anomalia,
+                    key="sel_anomalias"
+                )
+
+                df_img = df_sp[df_sp["foto_origen"] == imagen_anom_sel]
+                fig = pipe.dibujar_anomalias(
+                    resultados_imgs[imagen_anom_sel]["imagen_rgb"],
+                    df_img
+                )
+                st.pyplot(fig)
+            else:
+                st.markdown(
+                    '<div class="info-box">No se detectaron anomalías en ninguna imagen.</div>',
+                    unsafe_allow_html=True
+                )
 
 
 # ============================================================
