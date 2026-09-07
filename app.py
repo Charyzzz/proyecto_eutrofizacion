@@ -36,6 +36,9 @@ if 'modo_resultado' not in st.session_state:
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
+if 'imagenes_saltadas_similitud' not in st.session_state:
+    st.session_state.imagenes_saltadas_similitud = []
+
 
 # ============================================================
 # CARGA DE MODELOS (cacheado -- solo se carga una vez por sesión
@@ -755,6 +758,8 @@ if uploaded_files:
             st.stop()
 
         resultados_imgs = {}
+        imagenes_saltadas_similitud = []
+        ruta_anterior = None
         tmp_dir = Path(tempfile.mkdtemp(prefix="water_app_"))
         progreso = st.progress(0.0, text="Procesando imágenes...")
 
@@ -763,6 +768,22 @@ if uploaded_files:
                 ruta_tmp = tmp_dir / archivo.name
                 with open(ruta_tmp, "wb") as f:
                     f.write(archivo.getbuffer())
+
+                # Si esta imagen es muy parecida a la anterior (toma
+                # solapada/casi repetida), se salta y no pasa por el
+                # pipeline pesado (U-Net, etc.).
+                if ruta_anterior is not None:
+                    similitud = pipe.calcular_similitud_imagenes(ruta_anterior, ruta_tmp)
+                    if similitud >= pipe.UMBRAL_SIMILITUD:
+                        imagenes_saltadas_similitud.append((archivo.name, similitud))
+                        ruta_anterior = ruta_tmp
+                        progreso.progress(
+                            (i + 1) / n_a_procesar,
+                            text=f"Procesando imágenes... ({i + 1}/{n_a_procesar})"
+                        )
+                        continue
+
+                ruta_anterior = ruta_tmp
 
                 resultado = pipe.procesar_imagen(ruta_tmp, model, device, transform, config)
                 if resultado is not None:
@@ -774,6 +795,8 @@ if uploaded_files:
                 )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        st.session_state.imagenes_saltadas_similitud = imagenes_saltadas_similitud
 
         progreso.empty()
 
@@ -852,6 +875,21 @@ if uploaded_files:
                             <code>models/isolation_forest_agua.pkl</code>.
                             La próxima vez que uses "Hacer el análisis" se
                             usará este modelo actualizado.
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True
+                )
+
+            saltadas = st.session_state.imagenes_saltadas_similitud
+            if saltadas:
+                detalle = ", ".join(f"{nombre} ({sim * 100:.0f}%)" for nombre, sim in saltadas)
+                st.markdown(
+                    textwrap.dedent(
+                        f"""
+                        <div class="info-box">
+                            ⚠️ {len(saltadas)} imagen(es) no se procesaron por ser muy
+                            parecidas a la anterior (≥{pipe.UMBRAL_SIMILITUD * 100:.0f}% de similitud): {detalle}
                         </div>
                         """
                     ),
@@ -938,6 +976,16 @@ if uploaded_files:
                 )
                 st.pyplot(fig)
 
+                st.markdown("**¿Por qué se marcaron como anómalas?**")
+                anomalias_img = df_img[df_img["anomalia"] == -1].sort_values("score_anomalia")
+                for _, fila_anom in anomalias_img.iterrows():
+                    explicacion = pipe.explicar_anomalia(fila_anom)
+                    detalle = "; ".join(
+                        f"{e['caracteristica']} ({e['direccion']}, z={e['z_score']:.2f})"
+                        for e in explicacion
+                    )
+                    st.markdown(f"- Superpíxel {int(fila_anom['superpixel_label'])}: {detalle}")
+
                 gps_sel = resultados_imgs[imagen_anom_sel].get("gps")
                 if gps_sel:
                     mapa_url = f"https://www.google.com/maps?q={gps_sel['lat']},{gps_sel['lon']}"
@@ -978,11 +1026,18 @@ if uploaded_files:
                 filas_ubicacion = []
                 for nombre in imagenes_con_anomalia:
                     gps = resultados_imgs[nombre].get("gps")
-                    n_anom_img = int((df_sp.loc[df_sp["foto_origen"] == nombre, "anomalia"] == -1).sum())
+                    anomalias_de_esta = df_sp[
+                        (df_sp["foto_origen"] == nombre) & (df_sp["anomalia"] == -1)
+                    ]
+                    n_anom_img = len(anomalias_de_esta)
+
+                    peor_fila = anomalias_de_esta.sort_values("score_anomalia").iloc[0]
+                    motivo_principal = pipe.explicar_anomalia(peor_fila, top_n=1)[0]["caracteristica"]
 
                     fila = {
                         "Imagen": nombre,
                         "Anomalías": n_anom_img,
+                        "Motivo principal": motivo_principal,
                         "Latitud": round(gps["lat"], 6) if gps else None,
                         "Longitud": round(gps["lon"], 6) if gps else None,
                         "Ver en el mapa": (

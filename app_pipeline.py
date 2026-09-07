@@ -84,6 +84,25 @@ CARACTERISTICAS_DETECCION = [
 
 MODEL_PATH = BASE_PATH / "models" / "isolation_forest_agua.pkl"
 
+# Nombres legibles de cada feature, para explicar por qué un superpíxel
+# se marcó como anómalo (ver explicar_anomalia()).
+NOMBRES_FEATURES = {
+    "h_mean": "Tono (H)",
+    "h_std": "Variabilidad de tono",
+    "s_mean": "Saturación",
+    "s_std": "Variabilidad de saturación",
+    "v_mean": "Brillo (V)",
+    "v_std": "Variabilidad de brillo",
+    "l_mean": "Luminancia (L, Lab)",
+    "a_mean": "Eje rojo-verde (a*, Lab)",
+    "b_mean": "Eje azul-amarillo (b*, Lab)",
+    "textura_std": "Textura / rugosidad",
+}
+
+# Si dos imágenes consecutivas (en el orden en que se suben) tienen una
+# similitud >= a esto, la segunda NO se procesa (evita tomas solapadas).
+UMBRAL_SIMILITUD = 0.50
+
 
 # -----------------------------------------------------------------------
 # Carga de modelos
@@ -355,6 +374,28 @@ def extraer_gps(ruta_imagen):
     return {"lat": lat, "lon": lon, "alt": alt}
 
 
+def calcular_similitud_imagenes(ruta1, ruta2, tamano=(256, 256)):
+    """
+    Similitud estructural (SSIM) entre dos imágenes -- se comparan en
+    escala de grises y reducidas a `tamano` para que sea rápido incluso
+    con fotos de dron de alta resolución.
+
+    Devuelve un valor aproximadamente entre 0 y 1 (1 = idénticas). Sirve
+    para detectar tomas consecutivas solapadas/casi repetidas.
+    """
+    from skimage.metrics import structural_similarity as ssim
+
+    img1 = cv2.imread(str(ruta1), cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.imread(str(ruta2), cv2.IMREAD_GRAYSCALE)
+    if img1 is None or img2 is None:
+        return 0.0
+
+    img1 = cv2.resize(img1, tamano)
+    img2 = cv2.resize(img2, tamano)
+
+    return float(ssim(img1, img2))
+
+
 def procesar_imagen(ruta_imagen, model, device, transform, config):
     """Pipeline completo (máscara + superpíxeles) para UNA imagen."""
     imagen_bgr = cv2.imread(str(ruta_imagen))
@@ -425,6 +466,8 @@ def entrenar_isolation_forest(df_superpixeles, features=CARACTERISTICAS_DETECCIO
     df = df_superpixeles.copy()
     df["anomalia"] = modelo.predict(X_esc)
     df["score_anomalia"] = modelo.score_samples(X_esc)
+    for i, feat in enumerate(features):
+        df[f"z_{feat}"] = X_esc[:, i]
 
     return scaler, modelo, df
 
@@ -437,7 +480,37 @@ def predecir_anomalias(df_superpixeles, scaler, modelo, features=CARACTERISTICAS
     X_esc = scaler.transform(X)
     df["anomalia"] = modelo.predict(X_esc)
     df["score_anomalia"] = modelo.score_samples(X_esc)
+    for i, feat in enumerate(features):
+        df[f"z_{feat}"] = X_esc[:, i]
     return df
+
+
+def explicar_anomalia(fila, features=CARACTERISTICAS_DETECCION, top_n=3):
+    """
+    Explica por qué un superpíxel (una fila de df_superpixeles, ya con las
+    columnas z_<feature> que agregan entrenar_isolation_forest()/
+    predecir_anomalias()) se marcó como anómalo.
+
+    El z-score es literalmente el valor ya escalado (StandardScaler) que
+    usó el Isolation Forest -- cuánto se aleja esa característica del
+    promedio de la línea base, en desviaciones estándar. Las features con
+    mayor |z| son las que más "explican" la anomalía.
+
+    Devuelve una lista de hasta `top_n` dicts:
+        {"caracteristica": nombre legible, "z_score": float, "direccion": "más alto"/"más bajo"}
+    ordenada de la causa más fuerte a la más débil.
+    """
+    z_scores = [(feat, float(fila[f"z_{feat}"])) for feat in features if f"z_{feat}" in fila]
+    z_scores.sort(key=lambda x: abs(x[1]), reverse=True)
+
+    explicacion = []
+    for feat, z in z_scores[:top_n]:
+        explicacion.append({
+            "caracteristica": NOMBRES_FEATURES.get(feat, feat),
+            "z_score": z,
+            "direccion": "más alto" if z > 0 else "más bajo",
+        })
+    return explicacion
 
 
 # -----------------------------------------------------------------------
