@@ -101,7 +101,9 @@ NOMBRES_FEATURES = {
 
 # Si dos imágenes consecutivas (en el orden en que se suben) tienen una
 # similitud >= a esto, la segunda NO se procesa (evita tomas solapadas).
-UMBRAL_SIMILITUD = 0.50
+# Calibrado empíricamente con calcular_similitud_imagenes() (ORB): tomas
+# consecutivas reales dieron ~0.2-0.26, pares no relacionados ~0.003-0.004.
+UMBRAL_SIMILITUD = 0.15
 
 
 # -----------------------------------------------------------------------
@@ -374,17 +376,29 @@ def extraer_gps(ruta_imagen):
     return {"lat": lat, "lon": lon, "alt": alt}
 
 
-def calcular_similitud_imagenes(ruta1, ruta2, tamano=(256, 256)):
+def calcular_similitud_imagenes(ruta1, ruta2, tamano=(640, 480), nfeatures=1000, min_keypoints=20):
     """
-    Similitud estructural (SSIM) entre dos imágenes -- se comparan en
-    escala de grises y reducidas a `tamano` para que sea rápido incluso
-    con fotos de dron de alta resolución.
+    Estima qué tanto se SOLAPA el contenido de dos imágenes, sin asumir
+    que están alineadas píxel a píxel -- el dron se desplaza entre tomas,
+    así que la misma zona del río puede aparecer en una posición distinta
+    del encuadre de una foto a la siguiente. Comparar píxel a píxel (ej.
+    SSIM) falla ahí: reporta baja similitud aunque el contenido se solape
+    mucho, solo porque está corrido.
 
-    Devuelve un valor aproximadamente entre 0 y 1 (1 = idénticas). Sirve
-    para detectar tomas consecutivas solapadas/casi repetidas.
+    En vez de eso, usa emparejamiento de features ORB (la misma idea que
+    usa el software de fotogrametría para medir solapamiento entre fotos
+    de dron): detecta puntos característicos en ambas imágenes y los
+    empareja por su descriptor, sin importar en qué parte del encuadre
+    quedó cada uno -- invariante a la traslación/rotación que introduce
+    el movimiento del dron.
+
+    Devuelve un valor aproximado entre 0 y 1: fracción de los keypoints
+    de la imagen con MENOS keypoints que encontraron una buena
+    correspondencia en la otra. Si alguna imagen no tiene suficientes
+    keypoints detectables (ej. agua muy lisa y uniforme, sin textura),
+    devuelve 0.0 -- no se puede estimar solapamiento de forma confiable,
+    así que no se descarta la imagen.
     """
-    from skimage.metrics import structural_similarity as ssim
-
     img1 = cv2.imread(str(ruta1), cv2.IMREAD_GRAYSCALE)
     img2 = cv2.imread(str(ruta2), cv2.IMREAD_GRAYSCALE)
     if img1 is None or img2 is None:
@@ -393,7 +407,25 @@ def calcular_similitud_imagenes(ruta1, ruta2, tamano=(256, 256)):
     img1 = cv2.resize(img1, tamano)
     img2 = cv2.resize(img2, tamano)
 
-    return float(ssim(img1, img2))
+    orb = cv2.ORB_create(nfeatures=nfeatures)
+    kp1, des1 = orb.detectAndCompute(img1, None)
+    kp2, des2 = orb.detectAndCompute(img2, None)
+
+    if des1 is None or des2 is None or len(kp1) < min_keypoints or len(kp2) < min_keypoints:
+        return 0.0
+
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+    matches = bf.knnMatch(des1, des2, k=2)
+
+    buenos = []
+    for par in matches:
+        if len(par) == 2:
+            m, n = par
+            if m.distance < 0.75 * n.distance:  # ratio test de Lowe
+                buenos.append(m)
+
+    denominador = min(len(kp1), len(kp2))
+    return len(buenos) / denominador
 
 
 def procesar_imagen(ruta_imagen, model, device, transform, config):
