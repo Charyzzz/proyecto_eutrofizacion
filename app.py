@@ -671,9 +671,8 @@ if uploaded_files:
             textwrap.dedent(
                 """
                 <div class="section-description">
-                    Si tus imágenes se solapan o fueron tomadas casi en el
-                    mismo lugar, salta algunas para no analizar tomas
-                    redundantes.
+                    Si tus imágenes se solapan, salta algunas para no
+                    analizar tomas redundantes.
                 </div>
                 """
             ),
@@ -720,7 +719,7 @@ if uploaded_files:
         hacer_analisis = st.button(
             "🔎  Hacer el análisis",
             use_container_width=True,
-            help="Detecta anomalías con el Isolation Forest ya entrenado (no vuelve a entrenar nada)."
+            help="Detecta anomalías en base a una historia guardada."
         )
 
     with button_col2:
@@ -969,8 +968,7 @@ if uploaded_files:
                     textwrap.dedent(
                         """
                         <div class="section-description">
-                            Coordenadas tomadas del EXIF (GPS) de cada foto -- las
-                            imágenes sin ese dato aparecen con ubicación vacía.
+                            Coordenadas tomadas del EXIF (GPS) de cada foto.
                         </div>
                         """
                     ),
