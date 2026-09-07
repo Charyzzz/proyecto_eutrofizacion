@@ -310,12 +310,59 @@ def extraer_superpixeles(imagen_bgr, mascara_agua, n_segments=N_SEGMENTS, area_m
     return filas_ok, filas_descartadas, overlay_rgb
 
 
+def extraer_gps(ruta_imagen):
+    """
+    Extrae latitud/longitud/altitud del EXIF de una imagen (los drones DJI
+    lo incluyen). Devuelve {"lat": float, "lon": float, "alt": float|None}
+    o None si la imagen no tiene GPS en su EXIF.
+    """
+    from PIL import Image
+    from PIL.ExifTags import TAGS, GPSTAGS
+
+    try:
+        with Image.open(ruta_imagen) as img:
+            exif = img._getexif()
+    except Exception:
+        return None
+
+    if exif is None:
+        return None
+
+    gps_info = None
+    for tag_id, value in exif.items():
+        if TAGS.get(tag_id, tag_id) == "GPSInfo":
+            gps_info = value
+            break
+
+    if not gps_info:
+        return None
+
+    gps = {GPSTAGS.get(k, k): v for k, v in gps_info.items()}
+    if "GPSLatitude" not in gps or "GPSLongitude" not in gps:
+        return None
+
+    def _dms_a_decimal(dms, ref):
+        grados, minutos, segundos = (float(v) for v in dms)
+        decimal = grados + minutos / 60 + segundos / 3600
+        if ref in ("S", "W"):
+            decimal = -decimal
+        return decimal
+
+    lat = _dms_a_decimal(gps["GPSLatitude"], gps.get("GPSLatitudeRef", "N"))
+    lon = _dms_a_decimal(gps["GPSLongitude"], gps.get("GPSLongitudeRef", "E"))
+    alt = float(gps["GPSAltitude"]) if "GPSAltitude" in gps else None
+
+    return {"lat": lat, "lon": lon, "alt": alt}
+
+
 def procesar_imagen(ruta_imagen, model, device, transform, config):
     """Pipeline completo (máscara + superpíxeles) para UNA imagen."""
     imagen_bgr = cv2.imread(str(ruta_imagen))
     if imagen_bgr is None:
         return None
     imagen_rgb = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2RGB)
+
+    gps = extraer_gps(ruta_imagen)
 
     mask_final = predecir_mascara_final(imagen_bgr, imagen_rgb, model, device, transform, config)
 
@@ -327,6 +374,7 @@ def procesar_imagen(ruta_imagen, model, device, transform, config):
             "filas_descartadas": [],
             "overlay_superpixeles": None,
             "sin_agua_suficiente": True,
+            "gps": gps,
         }
 
     filas_ok, filas_descartadas, overlay = extraer_superpixeles(imagen_bgr, mask_final)
@@ -338,6 +386,7 @@ def procesar_imagen(ruta_imagen, model, device, transform, config):
         "filas_descartadas": filas_descartadas,
         "overlay_superpixeles": overlay,
         "sin_agua_suficiente": False,
+        "gps": gps,
     }
 
 

@@ -2,6 +2,7 @@ import streamlit as st
 import textwrap
 import tempfile
 import shutil
+import pandas as pd
 from pathlib import Path
 
 import app_pipeline as pipe
@@ -31,6 +32,9 @@ if 'df_superpixeles' not in st.session_state:
 
 if 'modo_resultado' not in st.session_state:
     st.session_state.modo_resultado = None
+
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
 
 # ============================================================
@@ -441,8 +445,16 @@ with st.container(border=True):
 
         label_visibility="collapsed",
 
-        key="water_images"
+        key=f"water_images_{st.session_state.uploader_key}"
     )
+
+    if uploaded_files:
+        if st.button("🗑️  Borrar imágenes cargadas"):
+            st.session_state.uploader_key += 1
+            st.session_state.resultados_imagenes = None
+            st.session_state.df_superpixeles = None
+            st.session_state.modo_resultado = None
+            st.rerun()
 
 
 # ============================================================
@@ -926,10 +938,72 @@ if uploaded_files:
                     df_img
                 )
                 st.pyplot(fig)
+
+                gps_sel = resultados_imgs[imagen_anom_sel].get("gps")
+                if gps_sel:
+                    mapa_url = f"https://www.google.com/maps?q={gps_sel['lat']},{gps_sel['lon']}"
+                    st.markdown(
+                        f"📍 Ubicación: `{gps_sel['lat']:.6f}, {gps_sel['lon']:.6f}` "
+                        f"&nbsp;[Ver en el mapa]({mapa_url})",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.caption("Esta imagen no tiene datos de ubicación (GPS) en su EXIF.")
             else:
                 st.markdown(
                     '<div class="info-box">No se detectaron anomalías en ninguna imagen.</div>',
                     unsafe_allow_html=True
+                )
+
+        # ---- Tabla resumen: ubicación de TODAS las imágenes con anomalías ----
+        if imagenes_con_anomalia:
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            with st.container(border=True):
+
+                st.markdown(
+                    '<div class="section-title">📍 Ubicación de imágenes con anomalías</div>',
+                    unsafe_allow_html=True
+                )
+                st.markdown(
+                    textwrap.dedent(
+                        """
+                        <div class="section-description">
+                            Coordenadas tomadas del EXIF (GPS) de cada foto -- las
+                            imágenes sin ese dato aparecen con ubicación vacía.
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True
+                )
+
+                filas_ubicacion = []
+                for nombre in imagenes_con_anomalia:
+                    gps = resultados_imgs[nombre].get("gps")
+                    n_anom_img = int((df_sp.loc[df_sp["foto_origen"] == nombre, "anomalia"] == -1).sum())
+
+                    fila = {
+                        "Imagen": nombre,
+                        "Anomalías": n_anom_img,
+                        "Latitud": round(gps["lat"], 6) if gps else None,
+                        "Longitud": round(gps["lon"], 6) if gps else None,
+                        "Ver en el mapa": (
+                            f"https://www.google.com/maps?q={gps['lat']},{gps['lon']}" if gps else None
+                        ),
+                    }
+                    filas_ubicacion.append(fila)
+
+                df_ubicacion = pd.DataFrame(filas_ubicacion)
+
+                st.dataframe(
+                    df_ubicacion,
+                    column_config={
+                        "Ver en el mapa": st.column_config.LinkColumn(
+                            "Ver en el mapa", display_text="Abrir mapa"
+                        ),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
                 )
 
 
