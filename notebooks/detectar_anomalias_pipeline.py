@@ -3,10 +3,13 @@ scripts/detectar_anomalias_pipeline.py
 =======================================
 Pipeline completo de detección de anomalías sobre RivAIrSet:
 
-    imagen -> máscara binaria (pipeline de 03_pipeline_combinado.ipynb:
-              U-Net + cerrar máscaras + canales a*/L combinados con AND)
-           -> superpíxeles (extraer_caracteristicas_superpixeles, igual
-              que en 02_superpixels_training.ipynb)
+    imagen -> ¿muy parecida a la anterior subida? -> se salta (evita
+              tomas solapadas/casi repetidas del mismo vuelo)
+           -> máscara binaria (U-Net + cerrar máscaras + canales
+              a*/L/b* combinados con AND + cerrar más con erosión
+              ajustable) -- misma lógica que usa app_pipeline.py,
+              reutilizada de ahí para que ambos scripts no se desvíen
+           -> superpíxeles (igual que en 02_superpixels_training.ipynb)
            -> Isolation Forest
 
 DISEÑO: fit en años base, predict en años de prueba
@@ -63,21 +66,23 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
-from skimage.segmentation import slic
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 BASE_PATH = Path(r"C:\Users\u_fabcore\Downloads\proyecto_eutrofizacion")
 sys.path.insert(0, str(BASE_PATH / "src"))
+sys.path.insert(0, str(BASE_PATH))
 
 from unet.config import UNetConfig
-from unet.preprocessing import load_image_rgb, downscale_image
-from unet.patches import get_patch_positions
-from unet.reconstruction import reconstruct_full_prediction
 from unet.augmentation import get_val_transforms
 from unet.inference import load_model
 
-from water_masc2 import conectar_graffiti_y_cerrar, suavizar_bordes_contorno
+# Reutilizamos la máscara (U-Net + cerrar + a*/L/b* + cerrar más) y la
+# extracción de superpíxeles y el chequeo de similitud de app_pipeline.py
+# en vez de mantener una segunda copia que se desactualiza -- ese módulo
+# está pensado justo para reutilizarse fuera de la app (no importa
+# streamlit).
+import app_pipeline as pipe
 
 # -----------------------------------------------------------------------
 # PARÁMETROS A ELEGIR
@@ -88,175 +93,25 @@ ANIOS_PRUEBA = [2022]          # se evalúan contra esa línea base
 SALTO = 10          # 1 = todas las imágenes de cada año; sube para ir más rápido
 N_IMAGENES = None  # límite opcional por conjunto (None = sin límite)
 
-N_SEGMENTS = 20    # mismo valor que usaba construir_tabla_superpixeles()
 SEED = 42
-
-# Mismos límites de a*/L que en 01_water_segmentation.ipynb / 03_pipeline_combinado
-A_MIN, A_MAX = -120, 1
-L_MIN, L_MAX = 50, 210
 
 CONTAMINATION = "auto"
 N_ESTIMATORS = 100
 
-CARACTERISTICAS_DETECCION = [
-    "h_mean", "h_std",
-    "s_mean", "s_std",
-    "v_mean", "v_std",
-    "l_mean",
-    "a_mean",
-    "b_mean",
-    "textura_std",
-]
+# Features, tamaño de máscara de color, umbral de similitud, etc. vienen
+# de app_pipeline.py (CARACTERISTICAS_DETECCION, N_SEGMENTS, AREA_MIN,
+# A_MIN/A_MAX/L_MIN/L_MAX/B_MIN/B_MAX, KERNEL_SIZE_CERRAR,
+# ITERACIONES_CERRAR, UMBRAL_SIMILITUD) -- así ambos scripts usan
+# siempre los mismos valores, sin duplicarlos aquí.
+CARACTERISTICAS_DETECCION = pipe.CARACTERISTICAS_DETECCION
 
 OUTPUT_DIR = BASE_PATH / "data" / "processed"
 MODELS_DIR = BASE_PATH / "models"
 
 
-# -----------------------------------------------------------------------
-# Bloques 1-3 de 03_pipeline_combinado.ipynb (U-Net + cerrar + a*/L)
-# -----------------------------------------------------------------------
-
-def segmentar_agua_canales_a_l(imagen_bgr, a_min, a_max, l_min, l_max, downscale=4):
-    """Igual que en 03_pipeline_combinado.ipynb: máscaras de agua usando
-    los canales a* (Lab, rojo-verde) y L (Lab, iluminancia), por separado
-    y combinados con AND. Devuelve (mask_a, mask_l, mask_a_l) en la
-    resolución ORIGINAL de la imagen (0/255, uint8)."""
-    altura_orig, ancho_orig = imagen_bgr.shape[:2]
-
-    if downscale > 1:
-        imagen_small = cv2.resize(
-            imagen_bgr,
-            (ancho_orig // downscale, altura_orig // downscale),
-            interpolation=cv2.INTER_AREA,
-        )
-    else:
-        imagen_small = imagen_bgr
-
-    lab = cv2.cvtColor(imagen_small, cv2.COLOR_BGR2Lab)
-    l_channel = lab[:, :, 0].astype(np.float32)
-    a_channel = lab[:, :, 1].astype(np.float32) - 128
-
-    mask_a_bool = (a_channel >= a_min) & (a_channel <= a_max)
-    mask_l_bool = (l_channel >= l_min) & (l_channel <= l_max)
-
-    mask_a = mask_a_bool.astype(np.uint8) * 255
-    mask_l = mask_l_bool.astype(np.uint8) * 255
-    mask_a_l = (mask_a_bool & mask_l_bool).astype(np.uint8) * 255
-
-    if downscale > 1:
-        size = (ancho_orig, altura_orig)
-        mask_a = cv2.resize(mask_a, size, interpolation=cv2.INTER_NEAREST)
-        mask_l = cv2.resize(mask_l, size, interpolation=cv2.INTER_NEAREST)
-        mask_a_l = cv2.resize(mask_a_l, size, interpolation=cv2.INTER_NEAREST)
-
-    return mask_a, mask_l, mask_a_l
-
-
-def predecir_mascara_final(imagen_bgr, imagen_rgb, model, device, transform, config):
-    """Ejecuta los bloques 1-3 de 03_pipeline_combinado.ipynb para UNA
-    imagen y devuelve la máscara final (0/255, uint8) en la resolución
-    ORIGINAL de la imagen."""
-    h, w = imagen_rgb.shape[:2]
-
-    # --- Bloque 1: U-Net ---
-    image_ds = downscale_image(imagen_rgb, config.downscale_factor)
-    h_ds, w_ds = image_ds.shape[:2]
-    positions = get_patch_positions(h_ds, w_ds, config.patch_size, config.stride)
-    _, mask_unet = reconstruct_full_prediction(
-        model=model,
-        image_ds=image_ds,
-        positions=positions,
-        transform=transform,
-        patch_size=config.patch_size,
-        threshold=config.threshold,
-        batch_size=config.batch_size * 2,
-        device=device,
-    )
-
-    # --- Bloque 2: Cerrar máscaras ---
-    mask_cerrada = conectar_graffiti_y_cerrar(mask_unet, skeleton_kernel=3, dilation_kernel=30)
-    mask_cerrada = suavizar_bordes_contorno(mask_cerrada, contour_approx=7)
-
-    # --- Bloque 3: canales a* y L combinados con AND ---
-    _, _, mask_a_l_orig = segmentar_agua_canales_a_l(
-        imagen_bgr, a_min=A_MIN, a_max=A_MAX, l_min=L_MIN, l_max=L_MAX, downscale=4
-    )
-    mask_a_l = cv2.resize(mask_a_l_orig, (w_ds, h_ds), interpolation=cv2.INTER_NEAREST)
-    mask_final_ds = cv2.bitwise_and(mask_cerrada, mask_a_l)
-
-    # Subimos la máscara final (resolución x2 de la U-Net) a la resolución
-    # ORIGINAL -- extraer_caracteristicas_superpixeles() espera imagen +
-    # máscara en resolución original (hace su propio downscale x4 adentro).
-    mask_final = cv2.resize(mask_final_ds, (w, h), interpolation=cv2.INTER_NEAREST)
-
-    return mask_final
-
-
-# -----------------------------------------------------------------------
-# Extracción de superpíxeles -- IGUAL a 02_superpixels_training.ipynb
-# -----------------------------------------------------------------------
-
-def extraer_caracteristicas_superpixeles(imagen, mascara_agua, n_segments=20):
-    """Copia exacta de la función de 02_superpixels_training.ipynb."""
-    downscale = 2
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mascara_agua = cv2.erode(mascara_agua, kernel, iterations=1)
-
-    if downscale > 1:
-        h, w = imagen.shape[:2]
-        imagen = cv2.resize(imagen, (w // downscale, h // downscale))
-        mascara_agua = cv2.resize(mascara_agua, (w // downscale, h // downscale))
-
-    img_rgb = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB)
-    hsv = cv2.cvtColor(imagen, cv2.COLOR_BGR2HSV)
-    lab = cv2.cvtColor(imagen, cv2.COLOR_BGR2Lab)
-    gray = cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
-
-    segments = slic(
-        img_rgb, n_segments=n_segments, compactness=10, sigma=1, mask=(mascara_agua > 0)
-    )
-
-    filas = []
-    for label in np.unique(segments):
-        if label == 0:
-            continue
-
-        region_mask = (segments == label)
-        area = region_mask.sum()
-        if area < 10000:
-            continue
-
-        h_vals = hsv[:, :, 0][region_mask]
-        s_vals = hsv[:, :, 1][region_mask]
-        v_vals = hsv[:, :, 2][region_mask]
-        l_vals = lab[:, :, 0][region_mask]
-        a_vals = lab[:, :, 1][region_mask].astype(np.float32) - 128
-        b_vals = lab[:, :, 2][region_mask].astype(np.float32) - 128
-        gray_vals = gray[region_mask]
-        textura_std = gray_vals.std()
-
-        ys, xs = np.where(region_mask)
-
-        filas.append({
-            "h_mean": h_vals.mean(), "h_std": h_vals.std(),
-            "s_mean": s_vals.mean(), "s_std": s_vals.std(),
-            "v_mean": v_vals.mean(), "v_std": v_vals.std(),
-            "l_mean": l_vals.mean(),
-            "a_mean": a_vals.mean(),
-            "b_mean": b_vals.mean(),
-            "textura_std": textura_std,
-            "area_px": int(area),
-            "centroid_x": float(xs.mean()),
-            "centroid_y": float(ys.mean()),
-            "superpixel_label": int(label),
-        })
-
-    return filas
-
-
 def procesar_imagen(fila, model, device, transform, config):
-    """Pipeline completo para UNA imagen: máscara final (bloques 1-3) +
+    """Pipeline completo para UNA imagen: máscara final (U-Net + cerrar +
+    a*/L/b* + cerrar más, vía app_pipeline.predecir_mascara_final) +
     superpíxeles. Devuelve una lista de dicts (una fila por superpíxel),
     lista vacía si no había agua suficiente, o None si no se pudo cargar."""
     img_path = BASE_PATH / fila["filepath"]
@@ -266,22 +121,17 @@ def procesar_imagen(fila, model, device, transform, config):
         return None
     imagen_rgb = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2RGB)
 
-    mask_final = predecir_mascara_final(imagen_bgr, imagen_rgb, model, device, transform, config)
-
-    # Misma erosión extra que aplicaba construir_tabla_superpixeles() antes
-    # de pasar la máscara a SLIC (además de la que ya hace la función misma).
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mask_final = cv2.erode(mask_final, kernel, iterations=2)
+    mask_final = pipe.predecir_mascara_final(imagen_bgr, imagen_rgb, model, device, transform, config)
 
     if (mask_final > 0).sum() < 500:
         return []
 
-    filas = extraer_caracteristicas_superpixeles(imagen_bgr, mask_final, n_segments=N_SEGMENTS)
-    for f in filas:
+    filas_ok, _, _ = pipe.extraer_superpixeles(imagen_bgr, mask_final)
+    for f in filas_ok:
         f["foto_origen"] = Path(fila["filepath"]).name
         f["anio"] = fila["group"]
 
-    return filas
+    return filas_ok
 
 
 # -----------------------------------------------------------------------
@@ -311,10 +161,28 @@ def construir_o_cargar_superpixeles(df_imagenes, nombre_cache, model, device, tr
 
     todas_las_filas = []
     errores = []
+    saltadas_similitud = []
+    ruta_anterior = None
     t0 = time.time()
     n = len(df_imagenes)
 
     for i, (_, fila) in enumerate(df_imagenes.iterrows()):
+        ruta_actual = BASE_PATH / fila["filepath"]
+
+        # Si esta imagen es muy parecida a la anterior (toma solapada/casi
+        # repetida del mismo vuelo), se salta sin correr el pipeline pesado.
+        if ruta_anterior is not None:
+            try:
+                similitud = pipe.calcular_similitud_imagenes(ruta_anterior, ruta_actual)
+            except Exception:
+                similitud = 0.0
+            if similitud >= pipe.UMBRAL_SIMILITUD:
+                saltadas_similitud.append((fila["filepath"], similitud))
+                ruta_anterior = ruta_actual
+                continue
+
+        ruta_anterior = ruta_actual
+
         try:
             filas = procesar_imagen(fila, model, device, transform, config)
         except Exception as e:
@@ -343,11 +211,14 @@ def construir_o_cargar_superpixeles(df_imagenes, nombre_cache, model, device, tr
     df_tabla.to_csv(ruta_cache, index=False)
 
     print(
-        f"\nProcesadas {n - len(errores)}/{n} imágenes | "
-        f"{len(todas_las_filas)} superpíxeles | {len(errores)} errores"
+        f"\nProcesadas {n - len(errores) - len(saltadas_similitud)}/{n} imágenes | "
+        f"{len(todas_las_filas)} superpíxeles | {len(errores)} errores | "
+        f"{len(saltadas_similitud)} saltadas por similitud (>={pipe.UMBRAL_SIMILITUD})"
     )
     if errores:
         print(f"  Ejemplos de errores: {errores[:5]}")
+    if saltadas_similitud:
+        print(f"  Ejemplos de saltadas por similitud: {saltadas_similitud[:5]}")
     print(f"Guardado: {ruta_cache}")
 
     return df_tabla
