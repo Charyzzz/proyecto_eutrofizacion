@@ -556,8 +556,8 @@ def explicar_anomalia(fila, features=CARACTERISTICAS_DETECCION, top_n=3):
 # -----------------------------------------------------------------------
 
 def dibujar_anomalias(imagen_rgb, df_superpixeles_imagen, downscale=4):
-    """Genera una figura de matplotlib (original | máscara de anomalías |
-    superposición), marcando con círculos rojos los superpíxeles anómalos."""
+    """Genera una figura de matplotlib (original | superposición con
+    círculos rojos), marcando los superpíxeles anómalos."""
     import matplotlib.pyplot as plt
 
     h, w = imagen_rgb.shape[:2]
@@ -575,19 +575,15 @@ def dibujar_anomalias(imagen_rgb, df_superpixeles_imagen, downscale=4):
 
     imagen_resultado = cv2.addWeighted(imagen_rgb, 0.75, mascara_anomalias, 0.5, 0)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
     axes[0].imshow(imagen_rgb)
     axes[0].set_title("Imagen original")
     axes[0].axis("off")
 
-    axes[1].imshow(mascara_anomalias)
+    axes[1].imshow(imagen_resultado)
     axes[1].set_title(f"Anomalías ({len(anomalias)})")
     axes[1].axis("off")
-
-    axes[2].imshow(imagen_resultado)
-    axes[2].set_title("Superposición")
-    axes[2].axis("off")
 
     plt.tight_layout()
     return fig

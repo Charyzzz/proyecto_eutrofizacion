@@ -658,53 +658,8 @@ if uploaded_files:
             )
 
 
-    # ========================================================
-    # OPCIÓN DE SALTO ENTRE IMÁGENES
-    # ========================================================
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    with st.container(border=True):
-
-        st.markdown(
-            '<div class="section-title">🔀 3. Opciones de muestreo</div>',
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            textwrap.dedent(
-                """
-                <div class="section-description">
-                    Si tus imágenes se solapan, salta algunas para no
-                    analizar tomas redundantes.
-                </div>
-                """
-            ),
-            unsafe_allow_html=True
-        )
-
-        salto = st.selectbox(
-            "Saltar N imágenes entre cada una analizada",
-            options=[0, 1, 2, 3, 5, 10],
-            index=0,
-            key="salto_imagenes"
-        )
-
-    stride = salto + 1
-    archivos_a_procesar = uploaded_files[::stride]
-    n_a_procesar = len(archivos_a_procesar)
-
-    st.markdown(
-        textwrap.dedent(
-            f"""
-            <div class="info-box">
-                Se analizarán <b>{n_a_procesar}</b> de {number_images:,} imágenes cargadas
-                (saltando {salto} entre cada una).
-            </div>
-            """
-        ),
-        unsafe_allow_html=True
-    )
-
+    archivos_a_procesar = uploaded_files
+    n_a_procesar = number_images
 
     # ========================================================
     # BOTONES: ANÁLISIS o ENTRENAMIENTO
