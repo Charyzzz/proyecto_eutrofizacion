@@ -53,9 +53,14 @@ L_MIN, L_MAX = 50, 210
 
 # b* (Lab, azul-amarillo) centrado va de -128 a 127 (igual que a*).
 # Se pidió b_max=260, pero eso no es alcanzable -- se usa 127 (el máximo
-# real), que en la práctica no filtra nada por el lado superior; el
-# filtro efectivo queda en b* >= -4.
-B_MIN, B_MAX = -4, 127
+# real), que en la práctica no filtra nada por el lado superior.
+#
+# b_min se aflojó de -4 a -10: en DJI_10226 (un caso real que se quedaba
+# sin superpíxeles) la mediana de b* en la zona de agua caía justo en
+# -4, así que ese umbral cortaba ~40% de esos píxeles casi al azar.
+# Con -10 se recupera el 99.9% de esa zona, sin dejar de excluir nada
+# en los casos donde b* ya era mayormente positivo.
+B_MIN, B_MAX = -10, 127
 
 # Erosión final ("cerrar más la máscara"), igual que erosionar_mascara()
 # de 03_pipeline_combinado.ipynb. Ajusta estos dos valores si el borde
